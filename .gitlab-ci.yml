@@ -1,0 +1,6 @@
+variables:
+  CI_TARGET_BUILD_DEPENDS: odhcpd
+
+include:
+  - remote: https://gitlab.com/ynezz/gitlab-evaluation/raw/wip/gitlab-ci/gitlab-ci.yml
+  - remote: https://gitlab.com/ynezz/gitlab-evaluation/raw/wip/gitlab-ci/gitlab-ci-pipeline.yml
