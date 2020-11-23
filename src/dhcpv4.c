@@ -588,11 +588,67 @@ static void dhcpv4_fr_stop(struct dhcp_assignment *a)
 	a->fr_timer.cb = NULL;
 }
 
+bool dhcpv4_parse_options(void *data, size_t len, struct interface *iface, struct dhcpv4_message *req, uint32_t *reqaddr, uint8_t *reqmsg,
+		uint32_t *leasetime, char *hostname, size_t *hostname_len,
+		char *reqopts, size_t *reqopts_len, bool *accept_fr_nonce)
+{
+	uint8_t *start = &req->options[4];
+	uint8_t *end = ((uint8_t*)data) + len;
+	struct dhcpv4_option *opt;
+
+	dhcpv4_for_each_option(start, end, opt) {
+		if (opt->type == DHCPV4_OPT_MESSAGE && opt->len == 1)
+			*reqmsg = opt->data[0];
+		else if (opt->type == DHCPV4_OPT_REQOPTS && opt->len > 0) {
+			*reqopts_len = opt->len;
+			memcpy(reqopts, opt->data, *reqopts_len);
+			reqopts[*reqopts_len] = 0;
+		} else if (opt->type == DHCPV4_OPT_HOSTNAME && opt->len > 0) {
+			*hostname_len = opt->len;
+			memcpy(hostname, opt->data, *hostname_len);
+			hostname[*hostname_len] = 0;
+		} else if (opt->type == DHCPV4_OPT_IPADDRESS && opt->len == 4)
+			memcpy(reqaddr, opt->data, 4);
+		else if (opt->type == DHCPV4_OPT_SERVERID && opt->len == 4) {
+			if (memcmp(opt->data, &iface->dhcpv4_local, 4))
+				return false;
+		} else if (iface->filter_class && opt->type == DHCPV4_OPT_USER_CLASS) {
+			uint8_t *c = opt->data, *cend = &opt->data[opt->len];
+			for (; c < cend && &c[*c] < cend; c = &c[1 + *c]) {
+				size_t elen = strlen(iface->filter_class);
+				if (*c == elen && !memcmp(&c[1], iface->filter_class, elen))
+					return false; // Ignore from homenet
+			}
+		} else if (opt->type == DHCPV4_OPT_LEASETIME && opt->len == 4)
+			memcpy(leasetime, opt->data, 4);
+		else if (opt->type == DHCPV4_OPT_FORCERENEW_NONCE_CAPABLE && opt->len > 0) {
+			for (uint8_t i = 0; i < opt->len; i++) {
+				if (opt->data[i] == 1) {
+					*accept_fr_nonce = true;
+					break;
+				}
+			}
+
+		}
+	}
+
+	if (*reqmsg != DHCPV4_MSG_DISCOVER && *reqmsg != DHCPV4_MSG_REQUEST &&
+	    *reqmsg != DHCPV4_MSG_INFORM && *reqmsg != DHCPV4_MSG_DECLINE &&
+	    *reqmsg != DHCPV4_MSG_RELEASE)
+		return false;
+
+	return true;
+}
+
 /* Handler for DHCPv4 messages */
 static void handle_dhcpv4(void *addr, void *data, size_t len,
 		struct interface *iface, _unused void *dest_addr)
 {
+	uint32_t leasetime = 0;
+	uint32_t reqaddr = INADDR_ANY;
 	struct dhcpv4_message *req = data;
+	uint8_t reqmsg = DHCPV4_MSG_REQUEST;
+	uint8_t msg = DHCPV4_MSG_ACK;
 
 	if (iface->dhcpv4 == MODE_DISABLED)
 		return;
@@ -629,62 +685,17 @@ static void handle_dhcpv4(void *addr, void *data, size_t len,
 	reply.options[2] = 0x53;
 	reply.options[3] = 0x63;
 
-	uint8_t *cookie = &reply.options[4];
-	uint8_t reqmsg = DHCPV4_MSG_REQUEST;
-	uint8_t msg = DHCPV4_MSG_ACK;
-
-	uint32_t reqaddr = INADDR_ANY;
-	uint32_t leasetime = 0;
-	size_t hostname_len = 0;
-	size_t reqopts_len = 0;
 	char hostname[256];
 	char reqopts[256];
-	bool accept_fr_nonce = false;
+	size_t reqopts_len = 0;
+	size_t hostname_len = 0;
 	bool incl_fr_opt = false;
+	bool accept_fr_nonce = false;
 
-	uint8_t *start = &req->options[4];
-	uint8_t *end = ((uint8_t*)data) + len;
-	struct dhcpv4_option *opt;
-	dhcpv4_for_each_option(start, end, opt) {
-		if (opt->type == DHCPV4_OPT_MESSAGE && opt->len == 1)
-			reqmsg = opt->data[0];
-		else if (opt->type == DHCPV4_OPT_REQOPTS && opt->len > 0) {
-			reqopts_len = opt->len;
-			memcpy(reqopts, opt->data, reqopts_len);
-			reqopts[reqopts_len] = 0;
-		} else if (opt->type == DHCPV4_OPT_HOSTNAME && opt->len > 0) {
-			hostname_len = opt->len;
-			memcpy(hostname, opt->data, hostname_len);
-			hostname[hostname_len] = 0;
-		} else if (opt->type == DHCPV4_OPT_IPADDRESS && opt->len == 4)
-			memcpy(&reqaddr, opt->data, 4);
-		else if (opt->type == DHCPV4_OPT_SERVERID && opt->len == 4) {
-			if (memcmp(opt->data, &iface->dhcpv4_local, 4))
-				return;
-		} else if (iface->filter_class && opt->type == DHCPV4_OPT_USER_CLASS) {
-			uint8_t *c = opt->data, *cend = &opt->data[opt->len];
-			for (; c < cend && &c[*c] < cend; c = &c[1 + *c]) {
-				size_t elen = strlen(iface->filter_class);
-				if (*c == elen && !memcmp(&c[1], iface->filter_class, elen))
-					return; // Ignore from homenet
-			}
-		} else if (opt->type == DHCPV4_OPT_LEASETIME && opt->len == 4)
-			memcpy(&leasetime, opt->data, 4);
-		else if (opt->type == DHCPV4_OPT_FORCERENEW_NONCE_CAPABLE && opt->len > 0) {
-			for (uint8_t i = 0; i < opt->len; i++) {
-				if (opt->data[i] == 1) {
-					accept_fr_nonce = true;
-					break;
-				}
-			}
-
-		}
-	}
-
-	if (reqmsg != DHCPV4_MSG_DISCOVER && reqmsg != DHCPV4_MSG_REQUEST &&
-	    reqmsg != DHCPV4_MSG_INFORM && reqmsg != DHCPV4_MSG_DECLINE &&
-	    reqmsg != DHCPV4_MSG_RELEASE)
+	if (!dhcpv4_parse_options(data, len, iface, req, &reqaddr, &reqmsg, &leasetime, hostname, &hostname_len, reqopts, &reqopts_len, &accept_fr_nonce))
 		return;
+
+	uint8_t *cookie = &reply.options[4];
 
 	struct dhcp_assignment *a = NULL;
 	uint32_t serverid = iface->dhcpv4_local.s_addr;

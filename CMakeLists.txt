@@ -5,15 +5,21 @@ cmake_policy(SET CMP0015 NEW)
 project(odhcpd C)
 
 set(CMAKE_SHARED_LIBRARY_LINK_C_FLAGS "")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -g -std=gnu99")
 
 FIND_PATH(ubox_include_dir libubox/uloop.h)
 FIND_PATH(libnl-tiny_include_dir netlink-generic.h PATH_SUFFIXES libnl-tiny)
 INCLUDE_DIRECTORIES(${ubox_include_dir} ${libnl-tiny_include_dir})
 
+FIND_LIBRARY(uci NAMES uci)
+FIND_LIBRARY(ubox NAMES ubox)
 FIND_LIBRARY(libnl NAMES nl-tiny)
 
-add_definitions(-D_GNU_SOURCE --std=gnu99 -Wall -Werror -Wextra -Wmissing-declarations -Wno-unused-parameter)
+ADD_DEFINITIONS(-Wall -Werror)
+IF(CMAKE_C_COMPILER_VERSION VERSION_GREATER 6)
+	ADD_DEFINITIONS(-Wextra -Werror=implicit-function-declaration)
+	ADD_DEFINITIONS(-Wformat -Werror=format-security -Werror=format-nonliteral)
+ENDIF()
+ADD_DEFINITIONS(-D_GNU_SOURCE -std=gnu99 -g -Wmissing-declarations -Wno-unused-parameter)
 
 if (${EXT_CER_ID})
 	add_definitions(-DEXT_CER_ID=${EXT_CER_ID})
@@ -30,8 +36,14 @@ if(${DHCPV4_SUPPORT})
 	set(EXT_SRC ${EXT_SRC} src/dhcpv4.c)
 endif(${DHCPV4_SUPPORT})
 
-add_executable(odhcpd src/odhcpd.c src/config.c src/router.c src/dhcpv6.c src/ndp.c src/dhcpv6-ia.c src/netlink.c ${EXT_SRC})
-target_link_libraries(odhcpd resolv ubox uci ${libnl} ${EXT_LINK})
+ADD_LIBRARY(odhcpd_library STATIC src/config.c src/router.c src/dhcpv6.c src/ndp.c src/dhcpv6-ia.c src/netlink.c ${EXT_SRC})
+add_executable(odhcpd src/odhcpd.c)
+target_link_libraries(odhcpd resolv odhcpd_library ${ubox} ${uci} ${libnl} ${EXT_LINK})
+
+IF(UNIT_TESTING)
+  ENABLE_TESTING()
+  ADD_SUBDIRECTORY(tests)
+ENDIF()
 
 # Installation
 install(TARGETS odhcpd DESTINATION sbin/)

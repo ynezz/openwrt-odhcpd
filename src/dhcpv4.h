@@ -14,6 +14,12 @@
  */
 #pragma once
 
+#include <stdint.h>
+#include <stdbool.h>
+#include <arpa/inet.h>
+
+#include "odhcpd.h"
+
 #define DHCPV4_CLIENT_PORT 68
 #define DHCPV4_SERVER_PORT 67
 
@@ -102,3 +108,7 @@ struct dhcpv4_option {
 		&opt[1] <= (struct dhcpv4_option*)(end) && \
 			&opt->data[opt->len] <= (end); \
 		opt = (struct dhcpv4_option*)&opt->data[opt->len])
+
+bool dhcpv4_parse_options(void *data, size_t len, struct interface *iface, struct dhcpv4_message *req, uint32_t *reqaddr, uint8_t *reqmsg,
+		uint32_t *leasetime, char *hostname, size_t *hostname_len,
+		char *reqopts, size_t *reqopts_len, bool *accept_fr_nonce);
